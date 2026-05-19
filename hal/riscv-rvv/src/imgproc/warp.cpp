@@ -279,6 +279,241 @@ public:
     }
 };
 
+template<typename helper, bool s16>
+static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, size_t src_step, int src_width, int src_height,
+                                     uchar *dst_data, size_t dst_step, int dst_width,
+                                     const float* mapx, size_t mapx_step, const float* mapy, size_t mapy_step,
+                                     int interpolation, int border_type, const double* border_value)
+{
+    using T = typename helper::ElemType;
+    constexpr int INTER_REMAP_COEF_BITS = 15;
+    constexpr int INTER_REMAP_COEF_SCALE = 1 << INTER_REMAP_COEF_BITS;
+
+    for (int i = start; i < end; i++)
+    {
+        int vl;
+        for (int j = 0; j < dst_width; j += vl)
+        {
+            vl = helper::setvl(dst_width - j);
+            typename RVV_SameLen<float, helper>::VecType mx, my;
+            if (s16)
+            {
+                auto map = __riscv_vlseg2e16_v_i16m1x2(reinterpret_cast<const short*>(mapx) + i * mapx_step + j * 2, vl);
+                mx = __riscv_vfwcvt_f(__riscv_vget_v_i16m1x2_i16m1(map, 0), vl);
+                my = __riscv_vfwcvt_f(__riscv_vget_v_i16m1x2_i16m1(map, 1), vl);
+            }
+            else
+            {
+                if (mapy == nullptr)
+                {
+                    auto map = __riscv_vlseg2e32_v_f32m2x2(mapx + i * mapx_step + j * 2, vl);
+                    mx = __riscv_vget_v_f32m2x2_f32m2(map, 0);
+                    my = __riscv_vget_v_f32m2x2_f32m2(map, 1);
+                }
+                else
+                {
+                    mx = RVV_SameLen<float, helper>::vload(mapx + i * mapx_step + j, vl);
+                    my = RVV_SameLen<float, helper>::vload(mapy + i * mapy_step + j, vl);
+                }
+            }
+            if (interpolation & CV_HAL_WARP_RELATIVE_MAP)
+            {
+                mx = __riscv_vfadd(mx, __riscv_vfcvt_f(__riscv_vadd(RVV_SameLen<uint, helper>::vid(vl), j, vl), vl), vl);
+                my = __riscv_vfadd(my, i, vl);
+            }
+
+            auto access = [&](typename RVV_SameLen<int, helper>::VecType ix, typename RVV_SameLen<int, helper>::VecType iy) {
+                auto ux = RVV_SameLen<uint, helper>::reinterpret(__riscv_vmin(__riscv_vmax(ix, 0, vl), src_width  - 1, vl));
+                auto uy = RVV_SameLen<uint, helper>::reinterpret(__riscv_vmin(__riscv_vmax(iy, 0, vl), src_height - 1, vl));
+                auto src = rvv<helper>::vloxei(reinterpret_cast<const T*>(src_data), __riscv_vmadd(uy, src_step, __riscv_vmul(ux, sizeof(T), vl), vl), vl);
+                if (border_type == CV_HAL_BORDER_CONSTANT)
+                {
+                    auto mask = __riscv_vmor(__riscv_vmsne(ix, RVV_SameLen<int, helper>::reinterpret(ux), vl), __riscv_vmsne(iy, RVV_SameLen<int, helper>::reinterpret(uy), vl), vl);
+                    src = __riscv_vmerge(src, helper::vmv(border_value[0], vl), mask, vl);
+                }
+                return src;
+            };
+
+            typename RVV_SameLen<int, helper>::VecType ix3, iy3;
+            typename RVV_SameLen<ushort, helper>::VecType imx, imy;
+            if (s16)
+            {
+                ix3 = __riscv_vfcvt_x(mx, vl);
+                iy3 = __riscv_vfcvt_x(my, vl);
+                auto md = __riscv_vle16_v_u16m1(reinterpret_cast<const ushort*>(mapy) + i * mapy_step + j, vl);
+                imx = __riscv_vand(md, 31, vl);
+                imy = __riscv_vand(__riscv_vsrl(md, 5, vl), 31, vl);
+            }
+            else
+            {
+                auto dmx = __riscv_vfcvt_x(__riscv_vfmul(mx, 32, vl), vl);
+                auto dmy = __riscv_vfcvt_x(__riscv_vfmul(my, 32, vl), vl);
+                ix3 = __riscv_vsra(dmx, 5, vl);
+                iy3 = __riscv_vsra(dmy, 5, vl);
+                imx = __riscv_vncvt_x(__riscv_vreinterpret_v_i32m2_u32m2(__riscv_vand(dmx, 31, vl)), vl);
+                imy = __riscv_vncvt_x(__riscv_vreinterpret_v_i32m2_u32m2(__riscv_vand(dmy, 31, vl)), vl);
+            }
+
+            auto ix0 = __riscv_vsub(ix3, 3, vl), iy0 = __riscv_vsub(iy3, 3, vl);
+            auto ix1 = __riscv_vsub(ix3, 2, vl), iy1 = __riscv_vsub(iy3, 2, vl);
+            auto ix2 = __riscv_vsub(ix3, 1, vl), iy2 = __riscv_vsub(iy3, 1, vl);
+            auto ix4 = __riscv_vadd(ix3, 1, vl), iy4 = __riscv_vadd(iy3, 1, vl);
+            auto ix5 = __riscv_vadd(ix3, 2, vl), iy5 = __riscv_vadd(iy3, 2, vl);
+            auto ix6 = __riscv_vadd(ix3, 3, vl), iy6 = __riscv_vadd(iy3, 3, vl);
+            auto ix7 = __riscv_vadd(ix3, 4, vl), iy7 = __riscv_vadd(iy3, 4, vl);
+
+            typename RVV_SameLen<float, helper>::VecType c0, c1, c2, c3, c4, c5, c6, c7;
+            auto intertab = [&](typename RVV_SameLen<ushort, helper>::VecType x) {
+                x = __riscv_vmul(x, sizeof(float) * 8, vl);
+                auto val = __riscv_vloxseg4ei16_v_f32m2x4(RemapTable::instance().coeffs, x, vl);
+                c0 = __riscv_vget_v_f32m2x4_f32m2(val, 0);
+                c1 = __riscv_vget_v_f32m2x4_f32m2(val, 1);
+                c2 = __riscv_vget_v_f32m2x4_f32m2(val, 2);
+                c3 = __riscv_vget_v_f32m2x4_f32m2(val, 3);
+                val = __riscv_vloxseg4ei16_v_f32m2x4(RemapTable::instance().coeffs, __riscv_vadd(x, sizeof(float) * 4, vl), vl);
+                c4 = __riscv_vget_v_f32m2x4_f32m2(val, 0);
+                c5 = __riscv_vget_v_f32m2x4_f32m2(val, 1);
+                c6 = __riscv_vget_v_f32m2x4_f32m2(val, 2);
+                c7 = __riscv_vget_v_f32m2x4_f32m2(val, 3);
+            };
+
+            if constexpr (std::is_same_v<T, uchar>)
+            {
+                auto to_i16 = [&](auto src) {
+                    return __riscv_vreinterpret_v_u16m1_i16m1(__riscv_vzext_vf2(src, vl));
+                };
+
+                auto fixed_weight = [&](typename RVV_SameLen<float, helper>::VecType a, typename RVV_SameLen<float, helper>::VecType b) {
+                    auto prod = __riscv_vfmul(a, b, vl);
+                    return __riscv_vnclip(__riscv_vfcvt_x(__riscv_vfmul(prod, INTER_REMAP_COEF_SCALE, vl), vl), 0, __RISCV_VXRM_RNU, vl);
+                };
+
+                intertab(imx);
+                auto x0 = c0, x1 = c1, x2 = c2, x3 = c3, x4 = c4, x5 = c5, x6 = c6, x7 = c7;
+                intertab(imy);
+
+                auto row_sum = [&](auto ycoeff, auto sy) {
+                    auto s0 = to_i16(access(ix0, sy));
+                    auto s1 = to_i16(access(ix1, sy));
+                    auto s2 = to_i16(access(ix2, sy));
+                    auto s3 = to_i16(access(ix3, sy));
+                    auto s4 = to_i16(access(ix4, sy));
+                    auto s5 = to_i16(access(ix5, sy));
+                    auto s6 = to_i16(access(ix6, sy));
+                    auto s7 = to_i16(access(ix7, sy));
+
+                    auto w0 = fixed_weight(ycoeff, x0), w1 = fixed_weight(ycoeff, x1), w2 = fixed_weight(ycoeff, x2), w3 = fixed_weight(ycoeff, x3);
+                    auto w4 = fixed_weight(ycoeff, x4), w5 = fixed_weight(ycoeff, x5), w6 = fixed_weight(ycoeff, x6), w7 = fixed_weight(ycoeff, x7);
+                    auto sum = __riscv_vwmul(s0, w0, vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s1, w1, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s2, w2, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s3, w3, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s4, w4, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s5, w5, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s6, w6, vl), vl);
+                    sum = __riscv_vadd(sum, __riscv_vwmul(s7, w7, vl), vl);
+                    return sum;
+                };
+
+                auto k0 = row_sum(c0, iy0);
+                auto k1 = row_sum(c1, iy1);
+                auto k2 = row_sum(c2, iy2);
+                auto k3 = row_sum(c3, iy3);
+                auto k4 = row_sum(c4, iy4);
+                auto k5 = row_sum(c5, iy5);
+                auto k6 = row_sum(c6, iy6);
+                auto k7 = row_sum(c7, iy7);
+                auto sum = __riscv_vadd(__riscv_vadd(__riscv_vadd(__riscv_vadd(k0, k1, vl), k2, vl), k3, vl), __riscv_vadd(__riscv_vadd(__riscv_vadd(k4, k5, vl), k6, vl), k7, vl), vl);
+                sum = __riscv_vmax(sum, 0, vl);
+                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, __riscv_vnclipu(__riscv_vreinterpret_v_i32m2_u32m2(sum), INTER_REMAP_COEF_BITS, __RISCV_VXRM_RNU, vl), vl);
+            }
+            else
+            {
+                intertab(imx);
+                auto v0 = rvv<helper>::vcvt0(access(ix0, iy0), vl);
+                auto v1 = rvv<helper>::vcvt0(access(ix1, iy0), vl);
+                auto v2 = rvv<helper>::vcvt0(access(ix2, iy0), vl);
+                auto v3 = rvv<helper>::vcvt0(access(ix3, iy0), vl);
+                auto v4 = rvv<helper>::vcvt0(access(ix4, iy0), vl);
+                auto v5 = rvv<helper>::vcvt0(access(ix5, iy0), vl);
+                auto v6 = rvv<helper>::vcvt0(access(ix6, iy0), vl);
+                auto v7 = rvv<helper>::vcvt0(access(ix7, iy0), vl);
+                auto k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy1), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy1), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy1), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy1), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy1), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy1), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy1), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy1), vl);
+                auto k1 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy2), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy2), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy2), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy2), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy2), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy2), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy2), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy2), vl);
+                auto k2 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy3), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy3), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy3), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy3), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy3), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy3), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy3), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy3), vl);
+                auto k3 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy4), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy4), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy4), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy4), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy4), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy4), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy4), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy4), vl);
+                auto k4 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy5), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy5), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy5), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy5), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy5), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy5), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy5), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy5), vl);
+                auto k5 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy6), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy6), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy6), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy6), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy6), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy6), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy6), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy6), vl);
+                auto k6 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+                v0 = rvv<helper>::vcvt0(access(ix0, iy7), vl);
+                v1 = rvv<helper>::vcvt0(access(ix1, iy7), vl);
+                v2 = rvv<helper>::vcvt0(access(ix2, iy7), vl);
+                v3 = rvv<helper>::vcvt0(access(ix3, iy7), vl);
+                v4 = rvv<helper>::vcvt0(access(ix4, iy7), vl);
+                v5 = rvv<helper>::vcvt0(access(ix5, iy7), vl);
+                v6 = rvv<helper>::vcvt0(access(ix6, iy7), vl);
+                v7 = rvv<helper>::vcvt0(access(ix7, iy7), vl);
+                auto k7 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
+
+                intertab(imy);
+                k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(k0, c0, vl), k1, c1, vl), k2, c2, vl), k3, c3, vl), k4, c4, vl), k5, c5, vl), k6, c6, vl), k7, c7, vl);
+
+                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, rvv<helper>::vcvt1(k0, vl), vl);
+            }
+        }
+    }
+
+    return CV_HAL_ERROR_OK;
+}
+
 template<typename helper>
 static inline int remap32fCubic(int start, int end, bool s16, const uchar *src_data, size_t src_step, int src_width, int src_height,
                                 uchar *dst_data, size_t dst_step, int dst_width,
@@ -864,7 +1099,7 @@ static inline int remap32f(int src_type, const uchar *src_data, size_t src_step,
     // remove this #ifndef in the future if possible
 #ifndef __clang__
     case CV_HAL_INTER_LANCZOS4*100 + CV_8UC1:
-        return CV_HAL_ERROR_NOT_IMPLEMENTED;
+        return invoke(dst_width, dst_height, {remap32fLanczos4C1<RVV_U8MF2, s16>}, src_data, src_step, src_width, src_height, dst_data, dst_step, dst_width, mapx, mapx_step, mapy, mapy_step, interpolation, border_type, border_value);
     // disabled since UI is fast enough
     // case CV_HAL_INTER_LANCZOS4*100 + CV_16UC1:
     //     return invoke(dst_width, dst_height, {remap32fLanczos4<RVV_U16M1, s16>}, src_data, src_step, src_width, src_height, dst_data, dst_step, dst_width, mapx, mapx_step, mapy, mapy_step, interpolation, border_type, border_value);
