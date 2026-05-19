@@ -501,6 +501,7 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
                 v5 = rvv<helper>::vcvt0(access(ix5, iy7), vl);
                 v6 = rvv<helper>::vcvt0(access(ix6, iy7), vl);
                 v7 = rvv<helper>::vcvt0(access(ix7, iy7), vl);
+                auto k7 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
                 intertab(imy);
                 k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(k0, c0, vl), k1, c1, vl), k2, c2, vl), k3, c3, vl), k4, c4, vl), k5, c5, vl), k6, c6, vl), k7, c7, vl);
 
