@@ -242,6 +242,8 @@ private:
         // in the function static void interpolateLanczos4
         constexpr double s45 = 0.70710678118654752440084436210485;
         constexpr double cs[][2] = {{1, 0}, {-s45, -s45}, {0, 1}, {s45, -s45}, {-1, 0}, {s45, s45}, {0, -1}, {-s45, s45}};
+        constexpr int INTER_REMAP_COEF_BITS = 15;
+        constexpr int INTER_REMAP_COEF_SCALE = 1 << INTER_REMAP_COEF_BITS;
 
         for (int t = 0; t < 32; t++)
         {
@@ -267,10 +269,49 @@ private:
             for (int i = 0; i < 8; i++)
                 coeffs[t*8+i] *= sum;
         }
+
+        for (int fy = 0; fy < 32; fy++)
+        {
+            for (int fx = 0; fx < 32; fx++)
+            {
+                short* itab = coeffs_i + (fy * 32 + fx) * 64;
+                int isum = 0;
+                for (int ky = 0; ky < 8; ky++)
+                {
+                    float vy = coeffs[fy * 8 + ky];
+                    for (int kx = 0; kx < 8; kx++)
+                    {
+                        float v = vy * coeffs[fx * 8 + kx];
+                        int q = saturate_cast<short>(v * INTER_REMAP_COEF_SCALE);
+                        itab[ky * 8 + kx] = (short)q;
+                        isum += q;
+                    }
+                }
+
+                if (isum != INTER_REMAP_COEF_SCALE)
+                {
+                    int diff = isum - INTER_REMAP_COEF_SCALE;
+                    int ksize2 = 4, Mk1 = ksize2, Mk2 = ksize2, mk1 = ksize2, mk2 = ksize2;
+                    for (int ky = ksize2; ky < ksize2 + 2; ky++)
+                        for (int kx = ksize2; kx < ksize2 + 2; kx++)
+                        {
+                            if (itab[ky * 8 + kx] < itab[mk1 * 8 + mk2])
+                                mk1 = ky, mk2 = kx;
+                            else if (itab[ky * 8 + kx] > itab[Mk1 * 8 + Mk2])
+                                Mk1 = ky, Mk2 = kx;
+                        }
+                    if (diff < 0)
+                        itab[Mk1 * 8 + Mk2] = (short)(itab[Mk1 * 8 + Mk2] - diff);
+                    else
+                        itab[mk1 * 8 + mk2] = (short)(itab[mk1 * 8 + mk2] - diff);
+                }
+            }
+        }
     }
 
 public:
     float coeffs[32 * 8];
+    short coeffs_i[32 * 32 * 8 * 8];
 
     static RemapTable& instance()
     {
@@ -379,53 +420,63 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
 
             if constexpr (std::is_same_v<T, uchar>)
             {
-                auto to_i16 = [&](auto src) {
-                    return __riscv_vreinterpret_v_u16m1_i16m1(__riscv_vzext_vf2(src, vl));
-                };
+                int ix_buf[256] = {0};
+                int iy_buf[256] = {0};
+                ushort fx_buf[256] = {0};
+                ushort fy_buf[256] = {0};
+                RVV_SameLen<int, helper>::vstore(ix_buf, ix3, vl);
+                RVV_SameLen<int, helper>::vstore(iy_buf, iy3, vl);
+                RVV_SameLen<ushort, helper>::vstore(fx_buf, imx, vl);
+                RVV_SameLen<ushort, helper>::vstore(fy_buf, imy, vl);
 
-                auto fixed_weight = [&](typename RVV_SameLen<float, helper>::VecType a, typename RVV_SameLen<float, helper>::VecType b) {
-                    auto prod = __riscv_vfmul(a, b, vl);
-                    return __riscv_vnclip(__riscv_vfcvt_x(__riscv_vfmul(prod, INTER_REMAP_COEF_SCALE, vl), vl), 0, __RISCV_VXRM_RNE, vl);
-                };
+                const int border_value_u8 = saturate_cast<int>(border_value[0]);
+                T* dst_ptr = reinterpret_cast<T*>(dst_data + i * dst_step) + j;
+                const short* table = RemapTable::instance().coeffs_i;
 
-                intertab(imx);
-                auto x0 = c0, x1 = c1, x2 = c2, x3 = c3, x4 = c4, x5 = c5, x6 = c6, x7 = c7;
-                intertab(imy);
+                for (int lane = 0; lane < vl; lane++)
+                {
+                    const short* tab = table + (fy_buf[lane] * 32 + fx_buf[lane]) * 64;
+                    const int xbase = ix_buf[lane] - 3;
+                    const int ybase = iy_buf[lane] - 3;
+                    int sum = 0;
 
-                auto row_sum = [&](auto ycoeff, auto sy) {
-                    auto s0 = to_i16(access(ix0, sy));
-                    auto s1 = to_i16(access(ix1, sy));
-                    auto s2 = to_i16(access(ix2, sy));
-                    auto s3 = to_i16(access(ix3, sy));
-                    auto s4 = to_i16(access(ix4, sy));
-                    auto s5 = to_i16(access(ix5, sy));
-                    auto s6 = to_i16(access(ix6, sy));
-                    auto s7 = to_i16(access(ix7, sy));
+                    for (int ky = 0; ky < 8; ky++)
+                    {
+                        int sy = ybase + ky;
+                        const uchar* src_row = nullptr;
 
-                    auto w0 = fixed_weight(ycoeff, x0), w1 = fixed_weight(ycoeff, x1), w2 = fixed_weight(ycoeff, x2), w3 = fixed_weight(ycoeff, x3);
-                    auto w4 = fixed_weight(ycoeff, x4), w5 = fixed_weight(ycoeff, x5), w6 = fixed_weight(ycoeff, x6), w7 = fixed_weight(ycoeff, x7);
-                    auto sum = __riscv_vwmul(s0, w0, vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s1, w1, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s2, w2, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s3, w3, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s4, w4, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s5, w5, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s6, w6, vl), vl);
-                    sum = __riscv_vadd(sum, __riscv_vwmul(s7, w7, vl), vl);
-                    return sum;
-                };
+                        if ((unsigned)sy < (unsigned)src_height)
+                        {
+                            src_row = src_data + sy * src_step;
+                        }
+                        else if (border_type == CV_HAL_BORDER_CONSTANT)
+                        {
+                            for (int kx = 0; kx < 8; kx++)
+                                sum += border_value_u8 * tab[ky * 8 + kx];
+                            continue;
+                        }
+                        else
+                        {
+                            sy = sy < 0 ? 0 : src_height - 1;
+                            src_row = src_data + sy * src_step;
+                        }
 
-                auto k0 = row_sum(c0, iy0);
-                auto k1 = row_sum(c1, iy1);
-                auto k2 = row_sum(c2, iy2);
-                auto k3 = row_sum(c3, iy3);
-                auto k4 = row_sum(c4, iy4);
-                auto k5 = row_sum(c5, iy5);
-                auto k6 = row_sum(c6, iy6);
-                auto k7 = row_sum(c7, iy7);
-                auto sum = __riscv_vadd(__riscv_vadd(__riscv_vadd(__riscv_vadd(k0, k1, vl), k2, vl), k3, vl), __riscv_vadd(__riscv_vadd(__riscv_vadd(k4, k5, vl), k6, vl), k7, vl), vl);
-                sum = __riscv_vmax(sum, 0, vl);
-                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, __riscv_vnclipu(__riscv_vnclipu(__riscv_vreinterpret_v_i32m2_u32m2(sum), INTER_REMAP_COEF_BITS, __RISCV_VXRM_RNE, vl), 0, __RISCV_VXRM_RNE, vl), vl);
+                        for (int kx = 0; kx < 8; kx++)
+                        {
+                            int sx = xbase + kx;
+                            int pixel;
+                            if ((unsigned)sx < (unsigned)src_width)
+                                pixel = src_row[sx];
+                            else if (border_type == CV_HAL_BORDER_CONSTANT)
+                                pixel = border_value_u8;
+                            else
+                                pixel = src_row[sx < 0 ? 0 : src_width - 1];
+                            sum += pixel * tab[ky * 8 + kx];
+                        }
+                    }
+
+                    dst_ptr[lane] = saturate_cast<T>((sum + (1 << (INTER_REMAP_COEF_BITS - 1))) >> INTER_REMAP_COEF_BITS);
+                }
             }
             else
             {
