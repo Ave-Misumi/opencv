@@ -216,6 +216,46 @@ static inline int remap32fC1(int start, int end, bool s16, const uchar *src_data
                 auto v0 = rvv<helper>::vcvt0(access(ix0, iy0), vl);
                 auto v1 = rvv<helper>::vcvt0(access(ix1, iy0), vl);
                 auto v2 = rvv<helper>::vcvt0(access(ix0, iy1), vl);
+                auto v3 = rvv<helper>::vcvt0(access(ix1, iy1), vl);
+
+                v0 = __riscv_vfadd(v0, __riscv_vfmul(fx, __riscv_vfsub(v1, v0, vl), vl), vl);
+                v2 = __riscv_vfadd(v2, __riscv_vfmul(fx, __riscv_vfsub(v3, v2, vl), vl), vl);
+                v0 = __riscv_vfadd(v0, __riscv_vfmul(fy, __riscv_vfsub(v2, v0, vl), vl), vl);
+                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, rvv<helper>::vcvt1(v0, vl), vl);
+            }
+            else
+            {
+                return CV_HAL_ERROR_NOT_IMPLEMENTED;
+            }
+        }
+    }
+
+    return CV_HAL_ERROR_OK;
+}
+
+class RemapTable
+{
+private:
+    RemapTable()
+    {
+        // the algorithm is copied from imgproc/src/imgwarp.cpp,
+        // in the function static void interpolateLanczos4
+        constexpr double s45 = 0.70710678118654752440084436210485;
+        constexpr double cs[][2] = {{1, 0}, {-s45, -s45}, {0, 1}, {s45, -s45}, {-1, 0}, {s45, s45}, {0, -1}, {-s45, s45}};
+
+        for (int t = 0; t < 32; t++)
+        {
+            float x = t / 32.0f;
+            if (x < FLT_EPSILON)
+            {
+                for (int i = 0; i < 8; i++)
+                    coeffs[t*8+i] = 0;
+                coeffs[t*8+3] = 1;
+                continue;
+            }
+
+            float sum = 0;
+            double y0=-(x+3)*CV_PI*0.25, s0 = std::sin(y0), c0= std::cos(y0);
             for (int i = 0; i < 8; i++)
             {
                 double y = -(x+3-i)*CV_PI*0.25;
