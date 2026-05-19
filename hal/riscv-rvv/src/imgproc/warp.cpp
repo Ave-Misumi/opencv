@@ -864,7 +864,7 @@ static inline int remap32f(int src_type, const uchar *src_data, size_t src_step,
     // remove this #ifndef in the future if possible
 #ifndef __clang__
     case CV_HAL_INTER_LANCZOS4*100 + CV_8UC1:
-        return invoke(dst_width, dst_height, {remap32fLanczos4<RVV_U8MF2, s16>}, src_data, src_step, src_width, src_height, dst_data, dst_step, dst_width, mapx, mapx_step, mapy, mapy_step, interpolation, border_type, border_value);
+        return CV_HAL_ERROR_NOT_IMPLEMENTED;
     // disabled since UI is fast enough
     // case CV_HAL_INTER_LANCZOS4*100 + CV_16UC1:
     //     return invoke(dst_width, dst_height, {remap32fLanczos4<RVV_U16M1, s16>}, src_data, src_step, src_width, src_height, dst_data, dst_step, dst_width, mapx, mapx_step, mapy, mapy_step, interpolation, border_type, border_value);
