@@ -425,7 +425,7 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
                 auto k7 = row_sum(c7, iy7);
                 auto sum = __riscv_vadd(__riscv_vadd(__riscv_vadd(__riscv_vadd(k0, k1, vl), k2, vl), k3, vl), __riscv_vadd(__riscv_vadd(__riscv_vadd(k4, k5, vl), k6, vl), k7, vl), vl);
                 sum = __riscv_vmax(sum, 0, vl);
-                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, __riscv_vnclipu(__riscv_vreinterpret_v_i32m2_u32m2(sum), INTER_REMAP_COEF_BITS, __RISCV_VXRM_RNU, vl), vl);
+                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, __riscv_vnclipu(__riscv_vnclipu(__riscv_vreinterpret_v_i32m2_u32m2(sum), INTER_REMAP_COEF_BITS, __RISCV_VXRM_RNU, vl), 0, __RISCV_VXRM_RNU, vl), vl);
             }
             else
             {
