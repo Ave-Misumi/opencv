@@ -627,6 +627,7 @@ static inline int remap32fCubic(int start, int end, bool s16, const uchar *src_d
             intertab(my);
             k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(k0, c0, vl), k1, c1, vl), k2, c2, vl), k3, c3, vl);
             helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, rvv<helper>::vcvt1(k0, vl), vl);
+        }
     }
 
     return CV_HAL_ERROR_OK;
