@@ -390,7 +390,6 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
 
                 intertab(imx);
                 auto x0 = c0, x1 = c1, x2 = c2, x3 = c3, x4 = c4, x5 = c5, x6 = c6, x7 = c7;
-                auto sum = __riscv_vadd(__riscv_vadd(__riscv_vadd(__riscv_vadd(k0, k1, vl), k2, vl), k3, vl), __riscv_vadd(__riscv_vadd(__riscv_vadd(k4, k5, vl), k6, vl), k7, vl), vl);
                 intertab(imy);
 
                 auto row_sum = [&](auto ycoeff, auto sy) {
