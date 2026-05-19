@@ -216,46 +216,6 @@ static inline int remap32fC1(int start, int end, bool s16, const uchar *src_data
                 auto v0 = rvv<helper>::vcvt0(access(ix0, iy0), vl);
                 auto v1 = rvv<helper>::vcvt0(access(ix1, iy0), vl);
                 auto v2 = rvv<helper>::vcvt0(access(ix0, iy1), vl);
-                auto v3 = rvv<helper>::vcvt0(access(ix1, iy1), vl);
-
-                v0 = __riscv_vfmacc(v0, fx, __riscv_vfsub(v1, v0, vl), vl);
-                v2 = __riscv_vfmacc(v2, fx, __riscv_vfsub(v3, v2, vl), vl);
-                v0 = __riscv_vfmacc(v0, fy, __riscv_vfsub(v2, v0, vl), vl);
-                helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, rvv<helper>::vcvt1(v0, vl), vl);
-            }
-            else
-            {
-                return CV_HAL_ERROR_NOT_IMPLEMENTED;
-            }
-        }
-    }
-
-    return CV_HAL_ERROR_OK;
-}
-
-class RemapTable
-{
-private:
-    RemapTable()
-    {
-        // the algorithm is copied from imgproc/src/imgwarp.cpp,
-        // in the function static void interpolateLanczos4
-        constexpr double s45 = 0.70710678118654752440084436210485;
-        constexpr double cs[][2] = {{1, 0}, {-s45, -s45}, {0, 1}, {s45, -s45}, {-1, 0}, {s45, s45}, {0, -1}, {-s45, s45}};
-
-        for (int t = 0; t < 32; t++)
-        {
-            float x = t / 32.0f;
-            if (x < FLT_EPSILON)
-            {
-                for (int i = 0; i < 8; i++)
-                    coeffs[t*8+i] = 0;
-                coeffs[t*8+3] = 1;
-                continue;
-            }
-
-            float sum = 0;
-            double y0=-(x+3)*CV_PI*0.25, s0 = std::sin(y0), c0= std::cos(y0);
             for (int i = 0; i < 8; i++)
             {
                 double y = -(x+3-i)*CV_PI*0.25;
@@ -390,6 +350,7 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
 
                 intertab(imx);
                 auto x0 = c0, x1 = c1, x2 = c2, x3 = c3, x4 = c4, x5 = c5, x6 = c6, x7 = c7;
+                auto sum = __riscv_vadd(__riscv_vadd(__riscv_vadd(__riscv_vadd(k0, k1, vl), k2, vl), k3, vl), __riscv_vadd(__riscv_vadd(__riscv_vadd(k4, k5, vl), k6, vl), k7, vl), vl);
                 intertab(imy);
 
                 auto row_sum = [&](auto ycoeff, auto sy) {
@@ -501,8 +462,6 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
                 v5 = rvv<helper>::vcvt0(access(ix5, iy7), vl);
                 v6 = rvv<helper>::vcvt0(access(ix6, iy7), vl);
                 v7 = rvv<helper>::vcvt0(access(ix7, iy7), vl);
-                auto k7 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(v0, c0, vl), v1, c1, vl), v2, c2, vl), v3, c3, vl), v4, c4, vl), v5, c5, vl), v6, c6, vl), v7, c7, vl);
-
                 intertab(imy);
                 k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(k0, c0, vl), k1, c1, vl), k2, c2, vl), k3, c3, vl), k4, c4, vl), k5, c5, vl), k6, c6, vl), k7, c7, vl);
 
@@ -627,9 +586,7 @@ static inline int remap32fCubic(int start, int end, bool s16, const uchar *src_d
 
             intertab(my);
             k0 = __riscv_vfmacc(__riscv_vfmacc(__riscv_vfmacc(__riscv_vfmul(k0, c0, vl), k1, c1, vl), k2, c2, vl), k3, c3, vl);
-
             helper::vstore(reinterpret_cast<T*>(dst_data + i * dst_step) + j, rvv<helper>::vcvt1(k0, vl), vl);
-        }
     }
 
     return CV_HAL_ERROR_OK;
