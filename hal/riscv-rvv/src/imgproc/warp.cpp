@@ -328,7 +328,6 @@ static inline int remap32fLanczos4C1(int start, int end, const uchar *src_data, 
 {
     using T = typename helper::ElemType;
     constexpr int INTER_REMAP_COEF_BITS = 15;
-    constexpr int INTER_REMAP_COEF_SCALE = 1 << INTER_REMAP_COEF_BITS;
 
     for (int i = start; i < end; i++)
     {
